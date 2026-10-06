@@ -1,0 +1,26 @@
+# Data — licensed, never committed. See the README.
+data/
+*.csv
+*.csv.gz
+*.parquet
+*.dta
+*.xlsx
+
+results/
+**/diagnostics_output/
+
+# Row-level model output (keyed to vendor option identifiers)
+**/per_run_dumps/
+supplementary/dumps/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+logs/

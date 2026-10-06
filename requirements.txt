@@ -1,0 +1,6 @@
+# Pinned for reproducibility. Python 3.10+ (developed on 3.10 and 3.13).
+numpy==1.26.4
+pandas==2.2.2
+scipy==1.13.1
+scikit-learn==1.5.1
+torch==2.3.1
