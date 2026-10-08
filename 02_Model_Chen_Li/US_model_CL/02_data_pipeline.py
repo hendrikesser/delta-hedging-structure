@@ -153,13 +153,25 @@ def pair_options_ndg(filtered_df):
 # ── V. Split and normalise ────────────────────────────────────────────────────
 
 def split_and_normalize(df_final, features):
-    test_cutoff  = pd.Timestamp(config.TEST_CUTOFF)
-    df_train_val = df_final[df_final['date'] <  test_cutoff].copy()
-    df_test      = df_final[df_final['date'] >= test_cutoff].copy()
+    test_cutoff = pd.Timestamp(config.TEST_CUTOFF)
 
-    print(f"9-Year Train+Val: {df_train_val['date'].min().year} - {df_train_val['date'].max().year}")
-    print(f"1-Year Test:      {df_test['date'].min().year}")
-    print(f"Features:         {features}")
+    # Use the date that corresponds to the end of delta_V / delta_S.
+    target_col = (
+        "date_target" if "date_target" in df_final.columns
+        else "date_next"
+    )
+
+    start_date = pd.to_datetime(df_final["date"])
+    target_date = pd.to_datetime(df_final[target_col])
+
+    # Keep training labels entirely before the test period.
+    train_mask = (start_date < test_cutoff) & (target_date < test_cutoff)
+
+    # Test pairs start in the test period and end there or later.
+    test_mask = (start_date >= test_cutoff) & (target_date >= test_cutoff)
+
+    df_train_val = df_final.loc[train_mask].copy()
+    df_test = df_final.loc[test_mask].copy()
 
     X_trainval_raw = df_train_val[features].values
     dV_trainval    = df_train_val['delta_V'].values
@@ -197,13 +209,12 @@ def split_and_normalize(df_final, features):
 
 # ── Top-level builder ────────────────────────────────────────────────────────
 
-def build_pipeline(pairing='ndg'):
+def build_pipeline(pairing='random'):
     """Full data pipeline returning normalised numpy arrays ready for PyTorch.
 
     Args:
-        pairing: 'ndg'    — strict consecutive market-day (08_run_ndgf); the
-                            default, and the method behind every reported result
-                 'random' — calendar-day gaps, 1-7 days (07_run_dgf)
+        pairing: 'random' — calendar-day gaps (07_run_dgf)
+                 'ndg'    — strict consecutive market-day (08_run_ndgf)
 
     Returns:
         (X_train, X_val, X_test, dV_train, dV_val, dV_test,

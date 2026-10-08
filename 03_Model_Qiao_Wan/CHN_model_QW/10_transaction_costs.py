@@ -8,7 +8,7 @@ and reports the net-of-cost gain ratio across a cost sweep.
 
 Cost model: proportional cost = c * |delta_t - delta_{t-1}| * S_t per rebalance
 (c in bps of notional traded). The first observation of each contract is charged
-an opening cost c*|delta|*S. Net one-step P&L = (dV - delta*dS) - cost; the
+an opening cost c*|delta|*S. Net one-step P&L = (dV - delta*dS) + cost; the
 net-of-cost gain is 1 - sum(net_NN^2) / sum(net_BS^2). Costs are applied
 identically to BS and NN, so the comparison isolates the extra turnover the NN
 incurs. HW is not produced here (separate folder) -- BS vs NN is the RQ3c core.
@@ -86,8 +86,8 @@ def main():
         c       = bp / 1e4
         cost_bs = c * d['turn_bs'] * d['S']
         cost_nn = c * d['turn_nn'] * d['S']
-        net_bs  = d['err_bs'] - cost_bs
-        net_nn  = d['err_nn'] - cost_nn
+        net_bs  = d['err_bs'] + cost_bs
+        net_nn  = d['err_nn'] + cost_nn
         gnet    = 1 - (net_nn ** 2).sum() / (net_bs ** 2).sum()
         flag    = '  <- crosses 0' if (prev is not None and prev > 0 >= gnet) else ''
         print(f"  {bp:>8} | {gnet:>+8.4f} | {(cost_nn**2).sum()/bs_mse_sum:>12.4f} | "

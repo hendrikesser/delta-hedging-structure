@@ -84,15 +84,28 @@ def main():
     config.HEDGE_FREQ = 'daily'
     df = dp.pair_options_ndg(filt)
 
-    tv = df[df['date'] < cutoff]
-    Xtv, dVtv, dStv, dbstv = (tv[feats].values, tv['delta_V'].values,
-                              tv['delta_S'].values, tv['delta'].values)
+    start_date = pd.to_datetime(df['date'])
+    target_date = pd.to_datetime(df['date_target'])
+
+    train_mask = (start_date < cutoff) & (target_date < cutoff)
+    tv = df.loc[train_mask].copy()
+
+    Xtv, dVtv, dStv, dbstv = (
+        tv[feats].values,
+        tv['delta_V'].values,
+        tv['delta_S'].values,
+        tv['delta'].values,
+    )
     Xtr, _, dVtr, _, dStr, _, dbstr, _ = train_test_split(
-        Xtv, dVtv, dStv, dbstv, test_size=config.VAL_SPLIT,
-        random_state=config.RANDOM_STATE, shuffle=True)
+        Xtv, dVtv, dStv, dbstv,
+        test_size=config.VAL_SPLIT,
+        random_state=config.RANDOM_STATE,
+        shuffle=True,
+    )
     mu, sd = Xtr.mean(0), Xtr.std(0)
 
-    te = df[df['date'] >= cutoff].sort_values(['optionid', 'date']).copy()
+    test_mask = (start_date >= cutoff) & (target_date >= cutoff)
+    te = df.loc[test_mask].sort_values(['optionid', 'date']).copy()    
     Xte = torch.tensor((te[feats].values - mu) / sd, dtype=torch.float32)
     dVte, dSte, dbste = te['delta_V'].values, te['delta_S'].values, te['delta'].values
     dates = pd.to_datetime(te['date'].values)

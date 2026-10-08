@@ -71,8 +71,9 @@ def _prep(features, df):
     receives 3-D train/val tensors, and run_flag slices seq_all for the test set.
     """
     T = config.SEQ_LEN
-    cutoff = pd.Timestamp(config.TEST_CUTOFF)
-    tv_mask = (df['date'] < cutoff).values
+    start_date = pd.to_datetime(df["date"])
+    target_date = pd.to_datetime(df["date_target"])
+    tv_mask = ((start_date < cutoff) & (target_date < cutoff)).to_numpy()
     tv_idx = np.where(tv_mask)[0]
     # train/val split on positions within the pre-cutoff block (shuffled, seeded)
     tr_rel, val_rel = train_test_split(np.arange(len(tv_idx)),
@@ -99,7 +100,7 @@ def run_flag(flag):
     config.HEDGE_FREQ = 'daily'
     if getattr(config, 'UNDERLYING', 'ETF') == 'INDEX':
         import sys as _s, os as _o
-        _s.path.insert(0, _o.path.abspath(_o.path.join(_o.path.dirname(__file__), '..', '..', 'supplementary')))
+        _s.path.insert(0, _o.path.abspath(_o.path.join(_o.path.dirname(__file__), '..', '..')))
         import index_loader
         merged = index_loader.build_merged(config)
     else:

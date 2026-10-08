@@ -40,7 +40,7 @@ dp          = _il.import_module('02_data_pipeline')
 build_model = _il.import_module('03_fnn_model').build_model
 train_model = _il.import_module('04_trainer').train_model
 
-RESIDUAL = True
+RESIDUAL = False
 RUNS  = 10
 KS    = {'daily': 1, 'weekly': 5, 'monthly': 21}
 # Chen & Li reference (2019 test): DNN3 calls 0.308 / 0.284 / 0.107
@@ -61,7 +61,7 @@ def stale_gain(df, k, delta_col):
 
 def main():
     features = config.get_feature_sets(config.FLAG)[config.MODEL_NAME]
-    cutoff   = pd.Timestamp(config.TEST_CUTOFF)
+    cutoff = pd.Timestamp(config.TEST_CUTOFF)
 
     # ---- load + filter, then DAILY pairing only (frequency lives in evaluation)
     raw = dp.load_raw_data()
@@ -69,13 +69,29 @@ def main():
     config.HEDGE_FREQ = 'daily'
     df_daily = dp.pair_options_ndg(filt)
 
-    # ---- train once on the daily training split -----------------------------
-    df_tv  = df_daily[df_daily['date'] < cutoff]
-    X_tv, dV_tv, dS_tv = df_tv[features].values, df_tv['delta_V'].values, df_tv['delta_S'].values
+    # ---- split by both pair start date and target date ---------------------
+    # pair_options_ndg() creates date_target for the end of delta_V / delta_S.
+    start_date = pd.to_datetime(df_daily['date'])
+    target_date = pd.to_datetime(df_daily['date_target'])
+
+    train_mask = (start_date < cutoff) & (target_date < cutoff)
+    crossing_mask = (start_date < cutoff) & (target_date >= cutoff)
+    df_tv = df_daily.loc[train_mask].copy()
+
+    print(f"Training pairs: {len(df_tv):,}")
+    print(f"Cutoff-crossing pairs excluded: {crossing_mask.sum():,}")
+
+    X_tv = df_tv[features].values
+    dV_tv = df_tv['delta_V'].values
+    dS_tv = df_tv['delta_S'].values
     dbs_tv = df_tv['delta'].values
+
     X_tr, X_val, dV_tr, dV_val, dS_tr, dS_val, dbs_tr, dbs_val = train_test_split(
-        X_tv, dV_tv, dS_tv, dbs_tv, test_size=config.VAL_SPLIT,
-        random_state=config.RANDOM_STATE, shuffle=True)
+        X_tv, dV_tv, dS_tv, dbs_tv,
+        test_size=config.VAL_SPLIT,
+        random_state=config.RANDOM_STATE,
+        shuffle=True
+    )
     X_mean, X_std = X_tr.mean(axis=0), X_tr.std(axis=0)
 
     def _std(a):
@@ -89,8 +105,12 @@ def main():
     dS_tr_t, dS_val_t = _col(dS_tr), _col(dS_val)
     dbs_tr_t, dbs_val_t = _col(dbs_tr), _col(dbs_val)
 
-    # ---- daily TEST frame (features at t, 1-day dV/dS, contract id, date) ----
-    test = df_daily[df_daily['date'] >= cutoff].sort_values(['optionid', 'date']).copy()
+    # ---- daily TEST frame (features at t, 1-day dV/dS, contract id, date) --
+    test_mask = (start_date >= cutoff) & (target_date >= cutoff)
+    test = df_daily.loc[test_mask].sort_values(
+        ['optionid', 'date']
+    ).copy()
+
     X_test_t = _std(test[features].values)
     test['dbs'] = test['delta'].values
 
@@ -98,21 +118,38 @@ def main():
     for r in range(1, RUNS + 1):
         model = build_model(n_features=len(features))
         if RESIDUAL:
-            model = train_model(model, X_tr_t, dV_tr_t, dS_tr_t, dbs_tr_t,
-                                 X_val_t, dV_val_t, dS_val_t, dbs_val_t)
+            model = train_model(
+                model, X_tr_t, dV_tr_t, dS_tr_t, dbs_tr_t,
+                X_val_t, dV_val_t, dS_val_t, dbs_val_t
+            )
         else:
-            model = train_model(model, X_tr_t, dV_tr_t, dS_tr_t, X_val_t, dV_val_t, dS_val_t)
+            model = train_model(
+                model, X_tr_t, dV_tr_t, dS_tr_t,
+                X_val_t, dV_val_t, dS_val_t
+            )
+
         model.eval()
         with torch.no_grad():
             raw = model(X_test_t).numpy().squeeze()
-        test['delta_model'] = (test['dbs'].values + raw) if RESIDUAL else raw
+
+        test['delta_model'] = (
+            test['dbs'].values + raw if RESIDUAL else raw
+        )
+
         for f, k in KS.items():
             gains[f].append(stale_gain(test, k, 'delta_model'))
-        print(f"run {r}/{RUNS}: " + " | ".join(f"{f} {gains[f][-1]:+.4f}" for f in KS))
+
+        print(
+            f"run {r}/{RUNS}: "
+            + " | ".join(f"{f} {gains[f][-1]:+.4f}" for f in KS)
+        )
 
     print("\n" + "=" * 62)
-    print(f"STALE-DELTA (daily mark-to-market) frequency gains  "
-          f"(FLAG={config.FLAG}, {config.MODEL_NAME}, {'residual' if RESIDUAL else 'direct'}, {RUNS} runs)")
+    print(
+        f"STALE-DELTA (daily mark-to-market) frequency gains  "
+        f"(FLAG={config.FLAG}, {config.MODEL_NAME}, "
+        f"{'residual' if RESIDUAL else 'direct'}, {RUNS} runs)"
+    )
     print(f"{'freq':>8} {'k':>3} {'gain (mean+/-sd)':>22}")
     for f, k in KS.items():
         g = np.array(gains[f])

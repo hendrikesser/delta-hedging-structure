@@ -38,15 +38,32 @@ SPECS = [
 
 def _prep(features, df):
     cutoff = pd.Timestamp(config.TEST_CUTOFF)
-    tv = df[df['date'] < cutoff]
-    X, dV, dS, dbs = tv[features].values, tv['delta_V'].values, tv['delta_S'].values, tv['delta'].values
+    start_date = pd.to_datetime(df['date'])
+    target_date = pd.to_datetime(df['date_target'])
+
+    train_mask = (start_date < cutoff) & (target_date < cutoff)
+    tv = df.loc[train_mask].copy()
+
+    X, dV, dS, dbs = (
+        tv[features].values,
+        tv['delta_V'].values,
+        tv['delta_S'].values,
+        tv['delta'].values,
+    )
     Xtr, Xv, dVtr, dVv, dStr, dSv, dbstr, dbsv = train_test_split(
-        X, dV, dS, dbs, test_size=config.VAL_SPLIT, random_state=config.RANDOM_STATE, shuffle=True)
+        X, dV, dS, dbs,
+        test_size=config.VAL_SPLIT,
+        random_state=config.RANDOM_STATE,
+        shuffle=True,
+    )
     mu, sd = Xtr.mean(0), Xtr.std(0)
     sd = np.where(sd == 0, 1.0, sd)
     st = lambda a: torch.tensor((a - mu) / sd, dtype=torch.float32)
     cl = lambda a: torch.tensor(a, dtype=torch.float32).view(-1, 1)
-    targs = (st(Xtr), cl(dVtr), cl(dStr), cl(dbstr), st(Xv), cl(dVv), cl(dSv), cl(dbsv))
+    targs = (
+        st(Xtr), cl(dVtr), cl(dStr), cl(dbstr),
+        st(Xv), cl(dVv), cl(dSv), cl(dbsv),
+    )
     return targs, mu, sd
 
 
@@ -65,7 +82,12 @@ def run_flag(flag):
     filt = dp.filter_data(merged, flag)
     df = dp.pair_options_ndg(filt)
     cutoff = pd.Timestamp(config.TEST_CUTOFF)
-    test0 = df[df['date'] >= cutoff].sort_values(['optionid', 'date']).copy()
+    start_date = pd.to_datetime(df['date'])
+    target_date = pd.to_datetime(df['date_target'])
+    test_mask = (start_date >= cutoff) & (target_date >= cutoff)
+    test0 = df.loc[test_mask].sort_values(
+    ['optionid', 'date']
+    ).copy()   
     test0['dbs'] = test0['delta'].values
     side = 'CALLS' if flag == config.Call else 'PUTS'
     print(f"\n==== {side} | CSI 300 ETF | residual FNN, daily (single seed) ====")

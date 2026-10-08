@@ -64,6 +64,10 @@ def filter_data(merged_df, flag):
         (merged_df['TTM'] >= 14 / 365)
     ].copy()
 
+    if getattr(config, 'AM_ONLY', False):
+        filtered_df = filtered_df[filtered_df['am_settlement'] == 1]
+        print(f"AM_ONLY: {len(filtered_df):,} rows after dropping PM-settled (weeklys)")
+
     if flag == config.Call:
         filtered_df = filtered_df[(filtered_df['delta'] >= 0.05) & (filtered_df['delta'] <= 0.95)]
         print(f"Remaining rows: {len(filtered_df)}")
@@ -83,39 +87,11 @@ def filter_data(merged_df, flag):
     return filtered_df
 
 
-# ── Qiao & Wan sample fingerprint (paper Table 1 + Section 4.1) ──────────────
-
-QW_BUCKET_N = {
-    config.Call: {0.1: 177397, 0.2: 113802, 0.3: 98583, 0.4: 97994, 0.5: 115378,
-                  0.6: 82713, 0.7: 66088, 0.8: 50210, 0.9: 36541},
-    config.Put:  {-0.1: 427684, -0.2: 244134, -0.3: 167260, -0.4: 134925, -0.5: 109754,
-                  -0.6: 61063, -0.7: 41028, -0.8: 27814, -0.9: 21297},
-}
-QW_TOTALS = {config.Call: (838706, 174303), config.Put: (1234959, 258968)}
-
-
-def print_qw_fingerprint(df_final, flag):
-    """Compare the paired sample against Qiao & Wan's exact counts.
-    If every bucket matches within ~1%, the paper's dataset is reproduced."""
-    total_paper, test_paper = QW_TOTALS[flag]
-    n_test = (df_final['date'] >= pd.Timestamp(config.TEST_CUTOFF)).sum()
-    print("\n[Q&W fingerprint]  (paper Table 1 / Sec 4.1)")
-    print(f"  Paired total : {len(df_final):>9,}   paper: {total_paper:>9,}  "
-          f"({len(df_final)/total_paper - 1:+.2%})")
-    print(f"  Test 2019    : {n_test:>9,}   paper: {test_paper:>9,}  "
-          f"({n_test/test_paper - 1:+.2%})")
-    print(f"  {'bucket':>7} {'yours':>10} {'paper':>10} {'diff':>8}")
-    for b, n_paper in QW_BUCKET_N[flag].items():
-        n = ((df_final['delta'] >= b - 0.05) & (df_final['delta'] < b + 0.05)).sum()
-        print(f"  {b:>7.1f} {n:>10,} {n_paper:>10,} {n/n_paper - 1:>+8.2%}")
-
-
-# ── IV-a. Pairing — calendar-day method (07_run_dgf) ────────────────────────
+# ── IV-a. Pairing — calendar-day method (07_run_dgf) ─────────────────────
 
 def pair_options_random(filtered_df):
     """Pairs each option row with its next observation within the same contract.
-    Pairs with a calendar-day gap above config.MAX_DAY_GAP are dropped;
-    a cap of 4 reproduces the paper's sample size (None = no cap)."""
+    Keeps 1-7 calendar-day gaps to accommodate weekends and holidays."""
     df_clean = filtered_df.sort_values(['optionid', 'date']).copy()
 
     grouped               = df_clean.groupby('optionid')
@@ -127,15 +103,11 @@ def pair_options_random(filtered_df):
     df_clean['delta_V'] = df_clean['mid_next'] - df_clean['mid']
     df_clean['delta_S'] = df_clean['S_next']   - df_clean['S']
 
-    max_gap = getattr(config, 'MAX_DAY_GAP', 4)
-    if max_gap:
-        df_final = df_clean[df_clean['day_gap'].between(1, max_gap)].copy()
-    else:
-        df_final = df_clean[df_clean['day_gap'] >= 1].copy()
+    df_final = df_clean[df_clean['day_gap'].between(1, 7)].copy()
     df_final = df_final.dropna(subset=['delta_V', 'delta_S'])
     df_final = df_final.sort_values('date')
 
-    print(f"Paired dataset shape: {df_final.shape}  (day-gap cap: {max_gap or 'none'})")
+    print(f"Paired dataset shape: {df_final.shape}")
     print(df_final[['date', 'delta_V', 'delta_S', 'day_gap']].head())
     return df_final
 
@@ -181,13 +153,25 @@ def pair_options_ndg(filtered_df):
 # ── V. Split and normalise ────────────────────────────────────────────────────
 
 def split_and_normalize(df_final, features):
-    test_cutoff  = pd.Timestamp(config.TEST_CUTOFF)
-    df_train_val = df_final[df_final['date'] <  test_cutoff].copy()
-    df_test      = df_final[df_final['date'] >= test_cutoff].copy()
+    test_cutoff = pd.Timestamp(config.TEST_CUTOFF)
 
-    print(f"9-Year Train+Val: {df_train_val['date'].min().year} - {df_train_val['date'].max().year}")
-    print(f"1-Year Test:      {df_test['date'].min().year}")
-    print(f"Features:         {features}")
+    # Use the date that corresponds to the end of delta_V / delta_S.
+    target_col = (
+        "date_target" if "date_target" in df_final.columns
+        else "date_next"
+    )
+
+    start_date = pd.to_datetime(df_final["date"])
+    target_date = pd.to_datetime(df_final[target_col])
+
+    # Keep training labels entirely before the test period.
+    train_mask = (start_date < test_cutoff) & (target_date < test_cutoff)
+
+    # Test pairs start in the test period and end there or later.
+    test_mask = (start_date >= test_cutoff) & (target_date >= test_cutoff)
+
+    df_train_val = df_final.loc[train_mask].copy()
+    df_test = df_final.loc[test_mask].copy()
 
     X_trainval_raw = df_train_val[features].values
     dV_trainval    = df_train_val['delta_V'].values
@@ -210,12 +194,12 @@ def split_and_normalize(df_final, features):
     X_val   = (X_val_raw   - X_mean) / X_std
     X_test  = (X_test_raw  - X_mean) / X_std
 
-    # Qiao & Wan (2024) Sec 4.1 counts 
+    # Chen & Li (2023) 
     print(f"Final Counts -> Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
     if config.FLAG == config.Call:
-        print("Q&W paper      -> Train: 531523,       Val: 132880,        Test: 174303")
+        print("Paper targets  -> Train: 612770,       Val: 153193,        Test: 207283")
     else:
-        print("Q&W paper      -> Train: 780793,       Val: 195198,        Test: 258968")
+        print("Paper targets  -> Train: 878237,       Val: 219560,        Test: 299538")
 
     return (X_train, X_val, X_test,
             dV_train, dV_val, dV_test,
@@ -225,13 +209,12 @@ def split_and_normalize(df_final, features):
 
 # ── Top-level builder ────────────────────────────────────────────────────────
 
-def build_pipeline(pairing='ndg'):
+def build_pipeline(pairing='random'):
     """Full data pipeline returning normalised numpy arrays ready for PyTorch.
 
     Args:
-        pairing: 'ndg'    — strict consecutive market-day (08_run_ndgf); the
-                            default, and the method behind every reported result
-                 'random' — calendar-day gaps, 1-7 days (07_run_dgf)
+        pairing: 'random' — calendar-day gaps (07_run_dgf)
+                 'ndg'    — strict consecutive market-day (08_run_ndgf)
 
     Returns:
         (X_train, X_val, X_test, dV_train, dV_val, dV_test,
@@ -251,10 +234,6 @@ def build_pipeline(pairing='ndg'):
         df_final = pair_options_ndg(filtered_df)
     else:
         raise ValueError(f"Unknown pairing '{pairing}'. Use 'random' or 'ndg'.")
-
-    if config.HEDGE_FREQ == 'daily':
-        # Paper Table 1 counts refer to the daily-paired sample only
-        print_qw_fingerprint(df_final, config.FLAG)
 
     features = config.get_feature_sets(config.FLAG)[config.MODEL_NAME]
     arrays   = split_and_normalize(df_final, features)

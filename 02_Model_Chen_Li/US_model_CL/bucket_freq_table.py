@@ -49,7 +49,10 @@ def _stale_sse(df, k, col):
 
 def _prep(features, df):
     cutoff = pd.Timestamp(config.TEST_CUTOFF)
-    tv = df[df['date'] < cutoff]
+    start_date = pd.to_datetime(df["date"])
+    target_date = pd.to_datetime(df["date_target"])
+    train_mask = (start_date < cutoff) & (target_date < cutoff)
+    tv = df.loc[train_mask].copy()
     X, dV, dS, dbs = tv[features].values, tv['delta_V'].values, tv['delta_S'].values, tv['delta'].values
     Xtr, Xv, dVtr, dVv, dStr, dSv, dbstr, dbsv = train_test_split(
         X, dV, dS, dbs, test_size=config.VAL_SPLIT, random_state=config.RANDOM_STATE, shuffle=True)

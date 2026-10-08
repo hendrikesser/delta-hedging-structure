@@ -8,7 +8,7 @@ the direct NN, and reports the net-of-cost gain across a cost sweep.
 
 Cost model: c * |delta_t - delta_{t-1}| * S_t per rebalance (c in bps of
 notional traded); opening cost c*|delta|*S at a contract's first observation.
-Net one-step P&L = (dV - delta*dS) - cost; net-of-cost gain =
+Net one-step P&L = (dV - delta*dS) + cost; net-of-cost gain =
 1 - sum(net_NN^2)/sum(net_BS^2). Costs applied identically to BS and NN, so the
 comparison isolates the extra turnover the learned hedge incurs.
 
@@ -77,8 +77,8 @@ def main():
         c       = bp / 1e4
         cost_bs = c * d['turn_bs'] * d['S']
         cost_nn = c * d['turn_nn'] * d['S']
-        net_bs  = d['err_bs'] - cost_bs
-        net_nn  = d['err_nn'] - cost_nn
+        net_bs  = d['err_bs'] + cost_bs
+        net_nn  = d['err_nn'] + cost_nn
         gnet    = 1 - (net_nn ** 2).sum() / (net_bs ** 2).sum()
         flag    = '  <- crosses 0' if (prev is not None and prev > 0 >= gnet) else ''
         print(f"  {bp:>8} | {gnet:>+8.4f} | {(cost_nn**2).sum()/bs_mse_sum:>12.4f} | "

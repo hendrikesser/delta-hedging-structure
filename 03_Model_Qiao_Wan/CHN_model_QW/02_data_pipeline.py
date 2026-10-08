@@ -184,12 +184,11 @@ def filter_data(merged_df, flag):
     return filtered_df
 
 
-# ── IV-a. Pairing — calendar-day method (07_run_dgf) ────────────────────────
+# ── IV-a. Pairing — calendar-day method (07_run_dgf) ─────────────────────
 
 def pair_options_random(filtered_df):
     """Pairs each option row with its next observation within the same contract.
-    Pairs with a calendar-day gap above config.MAX_DAY_GAP are dropped
-    (None = no cap)."""
+    Keeps 1-7 calendar-day gaps to accommodate weekends and holidays."""
     df_clean = filtered_df.sort_values(['optionid', 'date']).copy()
 
     grouped               = df_clean.groupby('optionid')
@@ -201,15 +200,11 @@ def pair_options_random(filtered_df):
     df_clean['delta_V'] = df_clean['mid_next'] - df_clean['mid']
     df_clean['delta_S'] = df_clean['S_next']   - df_clean['S']
 
-    max_gap = getattr(config, 'MAX_DAY_GAP', 4)
-    if max_gap:
-        df_final = df_clean[df_clean['day_gap'].between(1, max_gap)].copy()
-    else:
-        df_final = df_clean[df_clean['day_gap'] >= 1].copy()
+    df_final = df_clean[df_clean['day_gap'].between(1, 7)].copy()
     df_final = df_final.dropna(subset=['delta_V', 'delta_S'])
     df_final = df_final.sort_values('date')
 
-    print(f"Paired dataset shape: {df_final.shape}  (day-gap cap: {max_gap or 'none'})")
+    print(f"Paired dataset shape: {df_final.shape}")
     print(df_final[['date', 'delta_V', 'delta_S', 'day_gap']].head())
     return df_final
 
@@ -255,13 +250,25 @@ def pair_options_ndg(filtered_df):
 # ── V. Split and normalise ────────────────────────────────────────────────────
 
 def split_and_normalize(df_final, features):
-    test_cutoff  = pd.Timestamp(config.TEST_CUTOFF)
-    df_train_val = df_final[df_final['date'] <  test_cutoff].copy()
-    df_test      = df_final[df_final['date'] >= test_cutoff].copy()
+    test_cutoff = pd.Timestamp(config.TEST_CUTOFF)
 
-    print(f"Train+Val: {df_train_val['date'].min().year} - {df_train_val['date'].max().year}")
-    print(f"Test:      {df_test['date'].min().year}")
-    print(f"Features:  {features}")
+    # Use the date that corresponds to the end of delta_V / delta_S.
+    target_col = (
+        "date_target" if "date_target" in df_final.columns
+        else "date_next"
+    )
+
+    start_date = pd.to_datetime(df_final["date"])
+    target_date = pd.to_datetime(df_final[target_col])
+
+    # Keep training labels entirely before the test period.
+    train_mask = (start_date < test_cutoff) & (target_date < test_cutoff)
+
+    # Test pairs start in the test period and end there or later.
+    test_mask = (start_date >= test_cutoff) & (target_date >= test_cutoff)
+
+    df_train_val = df_final.loc[train_mask].copy()
+    df_test = df_final.loc[test_mask].copy()
 
     X_trainval_raw = df_train_val[features].values
     dV_trainval    = df_train_val['delta_V'].values
@@ -294,13 +301,12 @@ def split_and_normalize(df_final, features):
 
 # ── Top-level builder ────────────────────────────────────────────────────────
 
-def build_pipeline(pairing='ndg'):
+def build_pipeline(pairing='random'):
     """Full data pipeline returning normalised numpy arrays ready for PyTorch.
 
     Args:
-        pairing: 'ndg'    — strict consecutive market-day (08_run_ndgf); the
-                            default, and the method behind every reported result
-                 'random' — calendar-day gaps, 1-7 days (07_run_dgf)
+        pairing: 'random' — calendar-day gaps (07_run_dgf)
+                 'ndg'    — strict consecutive market-day (08_run_ndgf)
 
     Returns:
         (X_train, X_val, X_test, dV_train, dV_val, dV_test,
@@ -308,7 +314,12 @@ def build_pipeline(pairing='ndg'):
     """
     if getattr(config, 'UNDERLYING', 'ETF') == 'INDEX':
         import sys as _sys, os as _os
-        _sys.path.insert(0, _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..', '..', 'supplementary')))
+        _sys.path.insert(
+        0,
+        _os.path.abspath(
+        _os.path.join(_os.path.dirname(__file__), '..', '..', 'supplementary')
+        )
+        )
         import index_loader
         merged_df = index_loader.build_merged(config)
     else:
@@ -326,9 +337,6 @@ def build_pipeline(pairing='ndg'):
         df_final = pair_options_ndg(filtered_df)
     else:
         raise ValueError(f"Unknown pairing '{pairing}'. Use 'random' or 'ndg'.")
-
-    # Note: the US version prints a Qiao & Wan sample fingerprint here; the
-    # paper counts refer to the US/OptionMetrics sample and do not apply to CHN.
 
     features = config.get_feature_sets(config.FLAG)[config.MODEL_NAME]
     arrays   = split_and_normalize(df_final, features)
